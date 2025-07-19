@@ -1,62 +1,51 @@
-from flask import Flask, request, jsonify, render_template
+# ssi_dashboard_vercel.py
+
+from fastapi import FastAPI, UploadFile, Form
+from fastapi.responses import HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
-import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
-import scipy.stats as stats
-import io, base64
-import google.generativeai as genai
-import os
+import io
+import base64
 
-app = Flask(__name__)
-df = pd.read_csv("cleaned_ssi_data.csv")  # Default data
+app = FastAPI()
 
-@app.route('/')
-def homepage():
-    return render_template("index.html")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-@app.route('/dashboard')
-def dashboard():
-    summary_stats = df.describe().to_html(classes="table table-striped")
-    correlation = df.corr(numeric_only=True)
-    return render_template("dashboard.html", summary_stats=summary_stats, correlation=correlation.to_html())
+html_form = """
+    <h2>SSI Dashboard (Lightweight)</h2>
+    <form method="post" enctype="multipart/form-data">
+        <label>Upload CSV File:</label>
+        <input name="file" type="file">
+        <input type="submit">
+    </form>
+"""
 
-@app.route('/hypothesis-testing')
-def hypothesis_testing():
-    small = df[df['Hospital_Category_RiskAdjustment'] == 'Smaller hospitals (<250 beds)']['SIR'].dropna()
-    large = df[df['Hospital_Category_RiskAdjustment'] == 'Larger hospitals (>=250 beds)']['SIR'].dropna()
-    t_stat, p_val = stats.ttest_ind(large, small, equal_var=False)
-    conclusion = "significant" if p_val < 0.05 else "not significant"
-    return jsonify({
-        "t_stat": round(t_stat, 4),
-        "p_val": round(p_val, 4),
-        "conclusion": conclusion
-    })
+@app.get("/", response_class=HTMLResponse)
+def main():
+    return html_form
 
-@app.route('/recommendations', methods=["POST"])
-def generate_recommendations():
-    context = request.json.get("user_context", "")
-    api_key = os.getenv("GEMINI_API_KEY")
+@app.post("/", response_class=HTMLResponse)
+async def analyze(file: UploadFile):
+    df = pd.read_csv(file.file)
+    response_html = "<h2>Summary Statistics</h2>"
+    response_html += df.describe().to_html()
 
-    if not api_key:
-        return jsonify({"error": "GEMINI_API_KEY not found in environment variables."}), 400
+    # Correlation Heatmap
+    plt.figure(figsize=(10, 6))
+    sns.heatmap(df.corr(numeric_only=True), annot=True, cmap="coolwarm")
+    buf = io.BytesIO()
+    plt.savefig(buf, format="png")
+    buf.seek(0)
+    encoded = base64.b64encode(buf.read()).decode("utf-8")
+    img_html = f'<h2>Correlation Heatmap</h2><img src="data:image/png;base64,{encoded}"/>'
+    response_html += img_html
 
-    genai.configure(api_key=api_key)
-    high_sir = df.groupby("Operative_Procedure")["SIR"].mean().sort_values(ascending=False).head(3)
-    top_procedures = ", ".join(high_sir.index.tolist())
-
-    prompt = (
-        "You are a seasoned public health policy analyst. Based on the data insights below, "
-        "In 300 words, generate 5 clear, simple and practical recommendations to reduce the Standardized Surgical Infection Ratio (SIR) "
-        "across California hospitals:\n\n"
-        f"Highest SIRs observed in procedures: {top_procedures}.\n\n"
-        f"User Context: {context if context else 'No additional context provided.'}\n\n"
-        "Keep recommendations simple, realistic, relevant, evidence-informed and avoid ambiguous words."
-    )
-
-    model = genai.GenerativeModel("gemini-1.5-flash")
-    response = model.generate_content(prompt)
-    return jsonify({"recommendations": response.text})
-
-if __name__ == "__main__":
-    app.run(debug=True)
+    return HTMLResponse(content=response_html)
