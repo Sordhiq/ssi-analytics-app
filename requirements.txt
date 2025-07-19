@@ -1,0 +1,6 @@
+Flask==3.0.0
+pandas
+scipy
+matplotlib
+seaborn
+google-generativeai
